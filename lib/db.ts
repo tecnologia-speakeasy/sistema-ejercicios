@@ -10,7 +10,7 @@ const { Client } = pg;
 // queda retenida durante los 10–30 s que tardan las llamadas a OpenAI.
 //
 // Schema: las tablas viven en el schema indicado por ?schema=... del
-// DATABASE_URL (p. ej. ?schema=evaluacion). Se aplica vía search_path en cada
+// DATABASE_URL (aquí ?schema=ejercicio). Se aplica vía search_path en cada
 // conexión.
 // ─────────────────────────────────────────────────────────────────────────────
 
