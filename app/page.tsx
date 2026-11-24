@@ -22,7 +22,6 @@ export default function Inicio() {
   );
 }
 
-
 const ESTADOS: Record<EstadoDia, { texto: string; tono: TonoInsignia }> = {
   bloqueado: { texto: "Bloqueado", tono: "gris" },
   sin_material: { texto: "Próximamente", tono: "lavanda" },
