@@ -1,12 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  experimental: {
-    agentFeedback: true,
-  },
   cacheComponents: true,
   partialPrefetching: true,
+  experimental: {
+    agentFeedback: true,
+    // Carga de estudiantes por CSV: hasta 1 MB de texto más el resto de la petición.
+    serverActions: { bodySizeLimit: "2mb" },
+  },
   turbopack: {
     rules: {
       "*.css": {
