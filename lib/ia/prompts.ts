@@ -5,9 +5,11 @@ import type { Programa, TipoEjercicio } from "@/lib/tipos";
 import type { Mensaje } from "./openai";
 
 // Lo que se le pide a la IA y cómo se lee lo que responde. Puro (sin red ni BD).
-// UNA sola llamada por entrega (por estudiante y día): califica las preguntas
-// abiertas (G1) y escribe la retroalimentación del día. La G2 (solo audios) no
-// tiene abiertas: la llamada solo escribe el feedback.
+// UNA sola llamada por entrega (cada intento de un estudiante en un día):
+// califica las preguntas abiertas (G1) y escribe la retroalimentación, corta:
+// las confusiones concretas ("escribiste hello y era yellow…") o, si no tuvo
+// errores, la felicitación. La G2 (solo audios) no tiene abiertas: la llamada
+// solo escribe el feedback.
 
 export type EjercicioParaIA = {
   ejercicio_id: number;
@@ -73,12 +75,15 @@ export function resumirEjercicios(items: EjercicioParaIA[]) {
 
 export const primerNombre = (nombre: string) => nombre.trim().split(/\s+/)[0] || nombre.trim();
 
+export type IntentoParaIA = { numero: number; total: number; puedeRepetir: boolean };
+
 export function promptEntrega(
   nombre: string,
   dia: { numero: number; fecha: string },
   programa: Programa,
   items: EjercicioParaIA[],
   puntaje: number | null,
+  intento: IntentoParaIA = { numero: 1, total: 1, puedeRepetir: false },
 ): Mensaje[] {
   const abiertas = items.filter((it) => it.tipo === "abierta" && it.nota === null);
   const bloquesAbiertas = abiertas
@@ -91,7 +96,7 @@ export function promptEntrega(
     .join("\n\n");
 
   const tarea = abiertas.length
-    ? `1. Califica cada pregunta abierta de 0 a 10 según su rúbrica (gramática, vocabulario, coherencia y qué tan bien responde). Una respuesta vacía o irrelevante recibe 0. No asignes siempre el mismo número. Escribe para cada una un comentario breve en español (una o dos oraciones, amable y concreto), señalando si hace falta un error puntual y cómo corregirlo.
+    ? `1. Califica cada pregunta abierta de 0 a 10 según su rúbrica (gramática, vocabulario, coherencia y qué tan bien responde). Una respuesta vacía o irrelevante recibe 0. No asignes siempre el mismo número. Escribe para cada una un comentario en español de una sola oración, amable y concreto: su error más importante y cómo corregirlo, o qué hizo bien si no tiene errores.
 
 Preguntas abiertas:
 
@@ -118,20 +123,26 @@ ${bloquesAbiertas}
           ? "10 audios cortos que debía transcribir literalmente (dictado)."
           : "un audio largo (transcribirlo literalmente o completar el texto incompleto) y una pregunta abierta."
       }
-Puntaje automático del día${abiertas.length ? " (sin contar todavía las abiertas)" : ""}: ${puntaje ?? "pendiente"}/100.
+Es su intento ${intento.numero} de ${intento.total} de este día (cuenta el mejor).
+Puntaje automático de este intento${abiertas.length ? " (sin contar todavía las abiertas)" : ""}: ${puntaje ?? "pendiente"}/100.
 
 Resumen de sus ejercicios (precisión = % de palabras del audio que transcribió bien; los errores son ejemplos):
 ${JSON.stringify(resumirEjercicios(items), null, 2)}
 
 ${tarea}
 
-Para la retroalimentación del día:
-- Salúdalo por su primer nombre (${primerNombre(nombre)}) y háblale de tú, de manera personal.
-- Sé breve: entre 2 y 4 párrafos cortos. Es una práctica diaria, no un examen.
-- Primero lo que hizo bien y luego en qué debe fijarse: patrones de sus errores de escucha (palabras pequeñas que se omiten como artículos, preposiciones o auxiliares; terminaciones -s / -ed; palabras que suenan parecido; contracciones; ortografía), con uno o dos ejemplos tomados de sus errores.
-- Da una recomendación concreta para la próxima práctica (por ejemplo: escuchar primero completo, luego por frases, y revisar al final las palabras pequeñas).
-- Tono amable, respetuoso y natural, sin frases ultra positivas ni rebuscadas: nuestros estudiantes valoran la calidad humana y la paciencia, pero sin perder el profesionalismo. Puedes recomendar el Club conversacional (profes conectados todos los días hablando en inglés) si viene al caso.
-- Si dejó ejercicios vacíos, anímalo a intentarlos aunque no esté seguro.
+Para la retroalimentación del día: CORTA Y CONCISA (máximo unas 70 palabras). El estudiante la lee en el celular.
+- Primera línea: saluda a ${primerNombre(nombre)} por su nombre, de tú, y dile en pocas palabras cómo le fue.
+- Si tuvo errores: señala sus 2 o 3 confusiones más importantes, cada una en su propia línea que empiece con "• ". Di qué escribió, qué era y qué confunde (un sonido, una terminación, palabras que suenan parecido, una palabra pequeña que se le escapa…). Ejemplo:
+  • Escribiste "hello" en vez de "yellow": confundes el sonido /j/ del inicio con /h/.
+  Si un error se repite (por ejemplo, la -s de la tercera persona o los artículos), júntalo en una sola línea. Usa solo errores de la lista: no inventes.
+- Si no tuvo errores (todo al 100 %): felicítalo en una o dos frases, sin viñetas.${
+        intento.puedeRepetir
+          ? "\n- Si tuvo errores, termina con una frase corta animándolo a repetir el día: le queda un intento y cuenta el mejor."
+          : ""
+      }
+- Si dejó ejercicios vacíos, dilo en una frase corta.
+- Tono amable y natural, sin frases ultra positivas, sin relleno, sin títulos ni markdown (nada de **).
 
 Responde EXCLUSIVAMENTE en JSON con esta forma exacta:
 ${formato}`,

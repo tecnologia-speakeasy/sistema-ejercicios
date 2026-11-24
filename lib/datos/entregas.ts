@@ -4,11 +4,12 @@ import { query, transaction } from "@/lib/db";
 import { calificarEjercicio, puntajeDia, type EjercicioParaCalificar } from "@/lib/ejercicios/calificar";
 import type { Respuestas } from "@/lib/ejercicios/respuestas";
 import { ErrorNegocio } from "@/lib/errores";
-import type { EstadoEntrega, TipoEjercicio } from "@/lib/tipos";
+import { MAX_INTENTOS, type EstadoEntrega, type TipoEjercicio } from "@/lib/tipos";
 
 // Lo que hace el estudiante: ver sus días, empezar/retomar uno, guardar solo,
-// entregar (se califica en el servidor) y ver su resultado. Una entrega por
-// día. Las reglas de acceso las revisa también la BD (validar_entrega).
+// entregar (se califica en el servidor) y ver su resultado. Hasta MAX_INTENTOS
+// entregas (intentos) por día: cuenta la mejor. Las reglas de acceso las revisa
+// también la BD (validar_entrega).
 
 /** Al 3.er fallo de la IA la entrega pasa a 'error'. Relanzar solo se detiene a los 10. */
 export const MAX_FALLOS_AUTOMATICOS = 10;
@@ -17,8 +18,8 @@ export type EstadoDia =
   | "bloqueado" // su fecha aún no llega
   | "sin_material" // ya llegó pero el staff no lo ha publicado
   | "disponible"
-  | "en_curso"
-  | "calificando" // entregado: la IA está escribiendo el feedback
+  | "en_curso" // tiene un intento sin entregar
+  | "calificando" // entregó su último intento: la IA está escribiendo el feedback
   | "completado"
   | "cerrado"; // se pasó el plazo (o la generación está desactivada) sin entregarlo
 
@@ -30,7 +31,14 @@ export type DiaEstudiante = {
   ejercicios: number;
   es_hoy: boolean;
   estado: EstadoDia;
+  /** El mejor puntaje de sus intentos entregados. */
   puntaje: number | null;
+  /** Intentos entregados (el que está en curso no cuenta). */
+  intentos: number;
+  /** Puede empezar otro intento: le quedan, el día sigue abierto y el anterior ya tiene resultado. */
+  puede_repetir: boolean;
+  /** Ya puede ver lo que decía cada audio y las respuestas correctas: usó sus intentos o cerró el plazo. */
+  correctas_visibles: boolean;
 };
 
 type FilaDia = {
@@ -43,8 +51,11 @@ type FilaDia = {
   futuro: boolean;
   es_hoy: boolean;
   plazo_vencido: boolean;
-  entrega_estado: EstadoEntrega | null;
-  puntaje_total: number | null;
+  /** Intentos empezados (incluido el que esté en curso). */
+  empezados: number;
+  /** Estado de su último intento. */
+  ultimo: EstadoEntrega | null;
+  mejor: number | null;
 };
 
 const SQL_DIAS = `
@@ -53,30 +64,48 @@ const SQL_DIAS = `
          d.fecha > hoy_bogota() AS futuro,
          d.fecha = hoy_bogota() AS es_hoy,
          (g.entrega_hasta IS NOT NULL AND hoy_bogota() > g.entrega_hasta) AS plazo_vencido,
-         en.estado AS entrega_estado, en.puntaje_total
+         x.empezados, x.ultimo, x.mejor
     FROM dias d
     JOIN generaciones g ON g.id = d.generacion_id
-    LEFT JOIN entregas en ON en.dia_id = d.id AND en.estudiante_id = $1`;
+    CROSS JOIN LATERAL (
+      SELECT count(*)::int AS empezados,
+             (array_agg(en.estado ORDER BY en.intento DESC))[1] AS ultimo,
+             max(en.puntaje_total) FILTER (WHERE en.estado <> 'en_progreso') AS mejor
+        FROM entregas en
+       WHERE en.dia_id = d.id AND en.estudiante_id = $1) x`;
 
-function estadoDia(f: FilaDia, generacionActiva: boolean): EstadoDia {
-  if (f.entrega_estado === "listo") return "completado";
-  if (f.entrega_estado && f.entrega_estado !== "en_progreso") return "calificando";
+function estadoDia(f: FilaDia, abierto: boolean): EstadoDia {
+  if (f.ultimo === "listo") return "completado";
+  if (f.ultimo && f.ultimo !== "en_progreso") return "calificando";
+  if (f.ultimo === "en_progreso") {
+    // Un intento sin entregar. Si el día ya cerró, queda lo que entregó antes.
+    if (abierto) return "en_curso";
+    if (f.empezados > 1) return "completado";
+  }
   if (f.futuro) return "bloqueado";
   if (!f.publicado || f.ejercicios === 0) return "sin_material";
-  if (f.plazo_vencido || !generacionActiva) return "cerrado";
-  return f.entrega_estado === "en_progreso" ? "en_curso" : "disponible";
+  if (!abierto) return "cerrado";
+  return "disponible";
 }
 
-const aDia = (f: FilaDia, activa: boolean): DiaEstudiante => ({
-  id: f.id,
-  fecha: f.fecha,
-  numero: f.numero,
-  titulo: f.titulo,
-  ejercicios: f.ejercicios,
-  es_hoy: f.es_hoy,
-  estado: estadoDia(f, activa),
-  puntaje: f.puntaje_total,
-});
+function aDia(f: FilaDia, generacionActiva: boolean): DiaEstudiante {
+  const abierto = generacionActiva && !f.futuro && f.publicado && f.ejercicios > 0 && !f.plazo_vencido;
+  const intentos = f.empezados - (f.ultimo === "en_progreso" ? 1 : 0);
+  return {
+    id: f.id,
+    fecha: f.fecha,
+    numero: f.numero,
+    titulo: f.titulo,
+    ejercicios: f.ejercicios,
+    es_hoy: f.es_hoy,
+    estado: estadoDia(f, abierto),
+    puntaje: f.mejor,
+    intentos,
+    // Lo mismo que exige validar_entrega (db/003).
+    puede_repetir: abierto && f.empezados < MAX_INTENTOS && (f.ultimo === "listo" || f.ultimo === "error"),
+    correctas_visibles: intentos >= MAX_INTENTOS || f.plazo_vencido,
+  };
+}
 
 export async function diasDelEstudiante(e: EstudianteActual): Promise<DiaEstudiante[]> {
   const { rows } = await query<FilaDia>(`${SQL_DIAS} WHERE d.generacion_id = $2 ORDER BY d.fecha`, [
@@ -98,24 +127,38 @@ export type EjercicioPublico = {
   espacios: number | null;
 };
 
-export type EntregaEnCurso = { id: number; borrador: Respuestas };
+export type EntregaEnCurso = { id: number; intento: number; borrador: Respuestas };
 
 export type DiaParaPracticar = {
   dia: DiaEstudiante;
-  /** Vacío si el día no está disponible (no se mandan ejercicios de días bloqueados). */
+  /** Vacío si no puede practicarlo ahora (no se mandan ejercicios de días bloqueados). */
   ejercicios: EjercicioPublico[];
   enCurso: EntregaEnCurso | null;
 };
 
-export async function diaParaPracticar(fecha: string, e: EstudianteActual): Promise<DiaParaPracticar | null> {
+/** El día se puede practicar ahora: es el primer intento, uno en curso o (si lo pidió) el siguiente. */
+export function sePuedePracticar(dia: DiaEstudiante, repetir: boolean): boolean {
+  return dia.estado === "disponible" || dia.estado === "en_curso" || (repetir && dia.puede_repetir);
+}
+
+/** Un día de su generación (null si no existe). */
+export async function diaDelEstudiante(fecha: string, e: EstudianteActual): Promise<DiaEstudiante | null> {
   const { rows } = await query<FilaDia>(`${SQL_DIAS} WHERE d.generacion_id = $2 AND d.fecha = $3::date`, [
     e.id,
     e.generacion_id,
     fecha,
   ]);
-  if (!rows[0]) return null;
-  const dia = aDia(rows[0], e.generacion_activa);
-  if (dia.estado !== "disponible" && dia.estado !== "en_curso") return { dia, ejercicios: [], enCurso: null };
+  return rows[0] ? aDia(rows[0], e.generacion_activa) : null;
+}
+
+export async function diaParaPracticar(
+  fecha: string,
+  e: EstudianteActual,
+  { repetir = false }: { repetir?: boolean } = {},
+): Promise<DiaParaPracticar | null> {
+  const dia = await diaDelEstudiante(fecha, e);
+  if (!dia) return null;
+  if (!sePuedePracticar(dia, repetir)) return { dia, ejercicios: [], enCurso: null };
 
   const [{ rows: ejercicios }, { rows: entrega }] = await Promise.all([
     // Solo la vista pública: nunca la transcripción, las respuestas ni la rúbrica.
@@ -124,8 +167,8 @@ export async function diaParaPracticar(fecha: string, e: EstudianteActual): Prom
          FROM v_ejercicios_publicos WHERE dia_id = $1 ORDER BY orden`,
       [dia.id],
     ),
-    query<{ id: number; borrador: Respuestas }>(
-      `SELECT id, respuestas_borrador AS borrador FROM entregas
+    query<EntregaEnCurso>(
+      `SELECT id, intento, respuestas_borrador AS borrador FROM entregas
         WHERE dia_id = $1 AND estudiante_id = $2 AND estado = 'en_progreso'`,
       [dia.id, e.id],
     ),
@@ -135,41 +178,46 @@ export async function diaParaPracticar(fecha: string, e: EstudianteActual): Prom
 
 export type InicioEntrega = { tipo: "en_curso"; entrega: EntregaEnCurso } | { tipo: "finalizado" };
 
-// "Comenzar" / "Continuar": retoma la entrega en curso o crea la del día.
-export async function iniciarOReanudar(diaId: number, e: EstudianteActual): Promise<InicioEntrega> {
+// "Comenzar" / "Continuar": retoma el intento en curso o crea el intento
+// `intento` (el que la pantalla dice que va a empezar). Si ese intento ya se
+// entregó (pestaña vieja), responde "finalizado" y la pantalla va al resultado:
+// así una pestaña vieja nunca gasta el segundo intento.
+export async function iniciarOReanudar(diaId: number, intento: number, e: EstudianteActual): Promise<InicioEntrega> {
   if (!e.generacion_activa) throw new ErrorNegocio("Tu generación está desactivada por ahora.");
   const buscar = async () =>
     (
-      await query<{ id: number; estado: EstadoEntrega; borrador: Respuestas; plazo_vencido: boolean }>(
-        `SELECT en.id, en.estado, en.respuestas_borrador AS borrador,
+      await query<{ id: number; intento: number; estado: EstadoEntrega; borrador: Respuestas; plazo_vencido: boolean }>(
+        `SELECT en.id, en.intento, en.estado, en.respuestas_borrador AS borrador,
                 (g.entrega_hasta IS NOT NULL AND hoy_bogota() > g.entrega_hasta) AS plazo_vencido
            FROM entregas en JOIN dias d ON d.id = en.dia_id JOIN generaciones g ON g.id = d.generacion_id
-          WHERE en.dia_id = $1 AND en.estudiante_id = $2`,
+          WHERE en.dia_id = $1 AND en.estudiante_id = $2
+          ORDER BY en.intento`,
         [diaId, e.id],
       )
-    ).rows[0];
+    ).rows;
 
-  let actual = await buscar();
-  if (!actual) {
+  let intentos = await buscar();
+  const enCurso = () => intentos.find((x) => x.estado === "en_progreso");
+  if (!enCurso()) {
+    if (intento <= intentos.length) return { tipo: "finalizado" };
+    if (intento > intentos.length + 1) throw new ErrorNegocio("Recarga la página e inténtalo de nuevo.");
     try {
       // validar_entrega revisa: generación activa, día publicado y desbloqueado,
-      // plazo, ejercicios y que el estudiante sea de esa generación.
-      await query(
-        `INSERT INTO entregas (dia_id, estudiante_id, nombre) VALUES ($1, $2, $3)
-         ON CONFLICT (dia_id, estudiante_id) DO NOTHING`,
-        [diaId, e.id, e.nombre],
-      );
+      // plazo, ejercicios, que el estudiante sea de esa generación, que le
+      // queden intentos y que el anterior ya tenga resultado. Pone el número.
+      await query(`INSERT INTO entregas (dia_id, estudiante_id, nombre) VALUES ($1, $2, $3)`, [diaId, e.id, e.nombre]);
     } catch (err) {
       const pg = err as { code?: string; message?: string };
       if (pg.code === "P0001" && pg.message) throw new ErrorNegocio(`${pg.message}.`);
-      throw err;
+      // Otra pestaña lo creó al mismo tiempo: se retoma ese.
+      if (pg.code !== "23505") throw err;
     }
-    actual = await buscar();
-    if (!actual) throw new ErrorNegocio("No pudimos empezar este día. Inténtalo de nuevo.");
+    intentos = await buscar();
   }
-  if (actual.estado !== "en_progreso") return { tipo: "finalizado" };
+  const actual = enCurso();
+  if (!actual) throw new ErrorNegocio("No pudimos empezar este día. Inténtalo de nuevo.");
   if (actual.plazo_vencido) throw new ErrorNegocio("El plazo para entregar los ejercicios ya terminó.");
-  return { tipo: "en_curso", entrega: { id: actual.id, borrador: actual.borrador } };
+  return { tipo: "en_curso", entrega: { id: actual.id, intento: actual.intento, borrador: actual.borrador } };
 }
 
 export type ResultadoBorrador =

@@ -4,8 +4,9 @@ Práctica diaria de inglés por generación (vacaciones: 9 dic 2026 → 4 ene 20
 
 - **G1** (programa `audio_largo`): cada día 1 audio largo (transcribirlo literalmente **o** completar el texto incompleto) + 1 pregunta abierta. El audio vale 70 % del día y la abierta 30 %.
 - **G2** (programa `audios_cortos`): cada día 10 audios cortos para transcribir literalmente. Todos valen lo mismo.
-- Cada día se desbloquea a las 12:00 a. m. (hora de Colombia). Los días anteriores se pueden hacer hasta el «último día para entregar» de la generación.
-- Calificación automática en el servidor; la IA (OpenAI) escribe la retroalimentación del día y califica la pregunta abierta: **una llamada por estudiante y día**. Sin correos.
+- Cada día se desbloquea a las 12:00 a. m. (hora de Colombia); los futuros no se le muestran al estudiante. Los días anteriores se pueden hacer hasta el «último día para entregar» de la generación.
+- **Dos intentos por día**: cuenta el mejor. Lo que decía cada audio y las respuestas correctas se muestran cuando termina sus intentos (o cierra el plazo).
+- Calificación automática en el servidor; la IA (OpenAI) escribe una retroalimentación corta (las confusiones concretas o la felicitación) y califica la pregunta abierta: **una llamada por intento**. Sin correos.
 - Paneles: **estudiante** y **admin** (el de profesores queda para después; el rol `docente` ya existe).
 
 ## Puesta en marcha
@@ -15,6 +16,10 @@ Práctica diaria de inglés por generación (vacaciones: 9 dic 2026 → 4 ene 20
    psql "<DATABASE_URL sin ?schema=...>" -f db/001_schema.sql
    ```
    Comprobar: `SELECT to_regclass('ejercicio.entregas');` (no debe dar NULL).
+   Luego las migraciones en orden, **antes** de desplegar el código que las usa:
+   ```bash
+   psql "<DATABASE_URL sin ?schema=...>" -f db/003_dos_intentos.sql
+   ```
 
 2. **(Opcional) Generaciones de vacaciones + estudiantes**: crea G1 y G2 con sus 27 días y copia los estudiantes y los admins (con su misma contraseña) desde el schema `evaluacion`. Antes, revisa los códigos de G1/G2 en evaluacion (`SELECT codigo, nombre FROM evaluacion.generaciones;`) y ajústalos en el archivo si no son `gen-2026-03` y `gen-2026-11`.
    ```bash
@@ -40,7 +45,7 @@ Generaciones → la generación → un día:
 - **Copiar de otro día** y reordenar / desactivar / eliminar desde el menú «⋯».
 - Publica el día (o usa **Publicar días listos** en la generación): un día publicado lo ven los estudiantes desde su fecha.
 
-**Progreso**: matriz estudiantes × días con el puntaje de cada uno (clic = ver la entrega), exportar CSV, «Reintentar IA» y eliminar una entrega para que el estudiante repita el día.
+**Progreso**: matriz estudiantes × días con el mejor puntaje de cada uno (clic = ver el intento; un «2» en la esquina = lo hizo dos veces), exportar CSV, «Reintentar IA» y eliminar un intento para devolvérselo al estudiante.
 
 ## Pruebas
 

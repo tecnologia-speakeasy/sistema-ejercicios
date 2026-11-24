@@ -2,13 +2,13 @@ import "server-only";
 import { query, transaction } from "@/lib/db";
 import { puntajeDia } from "@/lib/ejercicios/calificar";
 import { MAX_FALLOS_AUTOMATICOS } from "@/lib/datos/entregas";
-import type { Programa } from "@/lib/tipos";
+import { MAX_INTENTOS, type Programa } from "@/lib/tipos";
 import { llamarOpenAI } from "./openai";
 import { leerSalidaEntrega, promptEntrega, type EjercicioParaIA } from "./prompts";
 
 // Después de entregar (fuera de cualquier transacción) la IA califica las
 // abiertas (G1) y escribe el feedback del día: UNA llamada a OpenAI por
-// entrega. Sin correo: el resultado solo se ve en la plataforma.
+// entrega (cada intento). Sin correo: el resultado solo se ve en la plataforma.
 //
 //   pendiente ──tomar──▶ calificando ──▶ listo
 //                             │
@@ -24,7 +24,15 @@ const CANDADO_MIN = 6;
 
 export type ResultadoProceso = "listo" | "fallo" | "ocupado";
 
-type Tomada = { nombre: string; fecha: string; numero: number; programa: Programa; puntaje_total: number | null };
+type Tomada = {
+  nombre: string;
+  fecha: string;
+  numero: number;
+  programa: Programa;
+  puntaje_total: number | null;
+  intento: number;
+  puede_repetir: boolean;
+};
 
 export async function procesarEntrega(
   entregaId: number,
@@ -39,8 +47,10 @@ export async function procesarEntrega(
         AND (en.procesando_hasta IS NULL OR en.procesando_hasta < now())
         AND ($3 OR en.ia_intentos < $4)
       RETURNING en.nombre, d.fecha::text AS fecha, (d.fecha - g.fecha_inicio + 1) AS numero, g.programa,
-                en.puntaje_total`,
-    [entregaId, CANDADO_MIN, forzar, MAX_FALLOS_AUTOMATICOS],
+                en.puntaje_total, en.intento,
+                (en.intento < $5 AND g.activa AND d.publicado
+                  AND (g.entrega_hasta IS NULL OR hoy_bogota() <= g.entrega_hasta)) AS puede_repetir`,
+    [entregaId, CANDADO_MIN, forzar, MAX_FALLOS_AUTOMATICOS, MAX_INTENTOS],
   );
   const e = tomada[0];
   if (!e) return "ocupado";
@@ -56,7 +66,14 @@ export async function procesarEntrega(
     );
     const abiertas = items.filter((it) => it.tipo === "abierta" && it.nota === null);
     const salida = leerSalidaEntrega(
-      await llamarOpenAI(promptEntrega(e.nombre, e, e.programa, items, e.puntaje_total), { temperatura: 0.4 }),
+      await llamarOpenAI(
+        promptEntrega(e.nombre, e, e.programa, items, e.puntaje_total, {
+          numero: e.intento,
+          total: MAX_INTENTOS,
+          puedeRepetir: e.puede_repetir,
+        }),
+        { temperatura: 0.4 },
+      ),
       abiertas.map((a) => a.ejercicio_id),
     );
 

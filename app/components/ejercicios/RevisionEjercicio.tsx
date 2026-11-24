@@ -9,7 +9,9 @@ import { ReproductorAudio } from "./ReproductorAudio";
 // Un ejercicio ya entregado: lo que escribió, lo que decía el audio, la
 // comparación palabra por palabra (transcripción), los espacios marcados
 // (completar) o la nota y el comentario de la IA (abierta). Lo usan la
-// revisión del estudiante y la vista del staff.
+// revisión del estudiante y la vista del staff. Sin correctasVisibles (al
+// estudiante le quedan intentos) solo marca lo que estuvo mal, sin la correcta:
+// los datos ya llegan sin ella (lib/ejercicios/ocultar.ts).
 
 export function tonoNota(nota: number | null): string {
   if (nota === null) return "bg-lavanda text-violeta";
@@ -18,7 +20,17 @@ export function tonoNota(nota: number | null): string {
   return "bg-[rgba(239,68,68,0.10)] text-error";
 }
 
-export function RevisionEjercicio({ r, numero, mostrarPeso = false }: { r: RespuestaRevision; numero: number; mostrarPeso?: boolean }) {
+export function RevisionEjercicio({
+  r,
+  numero,
+  mostrarPeso = false,
+  correctasVisibles = true,
+}: {
+  r: RespuestaRevision;
+  numero: number;
+  mostrarPeso?: boolean;
+  correctasVisibles?: boolean;
+}) {
   const titulo = r.titulo?.trim() || (r.tipo === "abierta" ? "Pregunta abierta" : `Audio ${numero}`);
   const notaTexto =
     r.nota === null ? "Calificando…" : r.tipo === "abierta" ? `${Math.round(r.nota * 10)}/10` : `${Math.round(r.nota * 100)}%`;
@@ -42,8 +54,8 @@ export function RevisionEjercicio({ r, numero, mostrarPeso = false }: { r: Respu
         </div>
       )}
 
-      {r.tipo === "transcripcion" && <Transcripcion r={r} />}
-      {r.tipo === "completar" && <Completar r={r} />}
+      {r.tipo === "transcripcion" && <Transcripcion r={r} visibles={correctasVisibles} />}
+      {r.tipo === "completar" && <Completar r={r} visibles={correctasVisibles} />}
       {r.tipo === "abierta" && <Abierta r={r} />}
     </article>
   );
@@ -60,16 +72,18 @@ function Bloque({ titulo, children }: { titulo: string; children: ReactNode }) {
 
 const textoPlano = "rounded-[10px] bg-campo px-3.5 py-3 text-[15px] leading-relaxed whitespace-pre-wrap text-tinta";
 
-function Transcripcion({ r }: { r: RespuestaRevision }) {
+function Transcripcion({ r, visibles }: { r: RespuestaRevision; visibles: boolean }) {
   const d = r.detalle as DetalleTranscripcion | null;
   return (
     <>
       <Bloque titulo="Tu transcripción">
         <p className={textoPlano}>{typeof r.respuesta === "string" ? r.respuesta : <em className="text-gris">(vacía)</em>}</p>
       </Bloque>
-      <Bloque titulo="Lo que decía el audio">
-        <p className={`${textoPlano} bg-lavanda`}>{r.transcripcion}</p>
-      </Bloque>
+      {visibles && (
+        <Bloque titulo="Lo que decía el audio">
+          <p className={`${textoPlano} bg-lavanda`}>{r.transcripcion}</p>
+        </Bloque>
+      )}
       {d && d.aciertos === d.palabras && d.ops.length === d.palabras && d.palabras > 0 ? (
         <p className="mt-3 text-sm font-semibold text-exito">¡Perfecta! Escribiste las {d.palabras} palabras del audio.</p>
       ) : d && d.ops.length > 0 && (
@@ -77,14 +91,50 @@ function Transcripcion({ r }: { r: RespuestaRevision }) {
           <p className="rounded-[10px] border border-borde-suave px-3.5 py-3 text-[15px] leading-[2]">
             {d.ops.map((o, i) => (
               <Fragment key={i}>
-                <Palabra o={o} />{" "}
+                {visibles ? <Palabra o={o} /> : <PalabraSinCorrecta o={o} />}{" "}
               </Fragment>
             ))}
           </p>
-          <Leyenda />
+          {visibles ? <Leyenda /> : <LeyendaSinCorrectas />}
         </Bloque>
       )}
     </>
+  );
+}
+
+// Le quedan intentos: qué escribió mal y dónde le faltó una palabra, sin la correcta.
+function PalabraSinCorrecta({ o }: { o: Operacion }) {
+  switch (o.t) {
+    case "ok":
+      return <span className="text-tinta">{o.p}</span>;
+    case "cambio":
+    case "sobra":
+      return <s className="rounded bg-[rgba(239,68,68,0.10)] px-1 text-error">{o.dada}</s>;
+    case "falta":
+      return (
+        <span
+          title="Aquí te faltó una palabra"
+          aria-label="Aquí te faltó una palabra"
+          className="inline-block w-8 rounded border border-dashed border-error/60 align-middle leading-[1.4]"
+        >
+          &nbsp;
+        </span>
+      );
+  }
+}
+
+function LeyendaSinCorrectas() {
+  return (
+    <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gris-oscuro">
+      <span>
+        <s className="rounded bg-[rgba(239,68,68,0.10)] px-1 text-error">así</s> palabra mal escrita, distinta o de más
+      </span>
+      <span>
+        <span className="inline-block w-6 rounded border border-dashed border-error/60 align-middle leading-[1.2]">&nbsp;</span>{" "}
+        aquí te faltó una palabra
+      </span>
+      <span className="text-gris">No cuentan mayúsculas, puntuación ni tildes.</span>
+    </p>
   );
 }
 
@@ -131,7 +181,7 @@ function Leyenda() {
   );
 }
 
-function Completar({ r }: { r: RespuestaRevision }) {
+function Completar({ r, visibles }: { r: RespuestaRevision; visibles: boolean }) {
   const d = r.detalle as DetalleCompletar | null;
   const partes = partirEnunciado(r.enunciado ?? "");
   return (
@@ -153,7 +203,9 @@ function Completar({ r }: { r: RespuestaRevision }) {
                     ) : (
                       <span className="rounded bg-[rgba(239,68,68,0.10)] px-1.5 text-error">(vacío)</span>
                     )}
-                    <span className="ml-0.5 rounded bg-[rgba(34,197,94,0.14)] px-1.5 font-semibold text-exito">{correcta}</span>
+                    {visibles && (
+                      <span className="ml-0.5 rounded bg-[rgba(34,197,94,0.14)] px-1.5 font-semibold text-exito">{correcta}</span>
+                    )}
                   </span>
                 ))}
             </Fragment>

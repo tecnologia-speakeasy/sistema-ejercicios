@@ -22,8 +22,8 @@ export async function reintentarIAAction(id: unknown): Promise<ResultadoAccion> 
   return { ok: true };
 }
 
-// Eliminar una entrega (solo admin, irreversible): el estudiante puede volver
-// a hacer ese día si sigue disponible.
+// Eliminar un intento (solo admin, irreversible): el estudiante lo recupera y
+// puede volver a hacer ese día si sigue disponible.
 export async function eliminarEntregaAction(id: unknown): Promise<ResultadoAccion> {
   let generacion: number;
   try {

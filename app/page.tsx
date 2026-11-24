@@ -10,8 +10,8 @@ import { diasDelEstudiante, type DiaEstudiante, type EstadoDia } from "@/lib/dat
 import { formatearFecha } from "@/lib/fechas";
 import { PROGRAMAS } from "@/lib/tipos";
 
-// Inicio del estudiante: sus días (se desbloquea uno cada día), la práctica de
-// hoy, su resumen y "Mi progreso".
+// Inicio del estudiante: la práctica de hoy, su resumen, "Mi progreso" y sus
+// días. Los días cuya fecha no ha llegado no se muestran: aparecen uno por día.
 export default function Inicio() {
   return (
     <div className="fondo-pagina flex min-h-screen flex-1 flex-col text-tinta">
@@ -52,6 +52,8 @@ async function Contenido() {
   const puntajes = hechos.flatMap((d) => (d.puntaje === null ? [] : [d.puntaje]));
   const promedio = puntajes.length ? Math.round(puntajes.reduce((s, p) => s + p, 0) / puntajes.length) : null;
   const hoy = dias.find((d) => d.es_hoy) ?? null;
+  // El siguiente día que se desbloquea (los días son consecutivos: mañana).
+  const proximo = dias.find((d) => d.estado === "bloqueado") ?? null;
   // Pendientes de días anteriores que todavía puede hacer.
   const atrasados = dias.filter((d) => !d.es_hoy && (d.estado === "disponible" || d.estado === "en_curso"));
   const programa = PROGRAMAS[estudiante.programa];
@@ -78,13 +80,15 @@ async function Contenido() {
           </Tarjeta>
         )}
 
-        <dl className="mb-7 grid grid-cols-3 gap-2.5 sm:gap-4">
-          <Dato titulo="Días completados" valor={`${hechos.length}`} sufijo={`/${dias.length}`} />
-          <Dato titulo="Promedio" valor={promedio === null ? "—" : `${promedio}`} sufijo={promedio === null ? "" : "/100"} />
-          <Dato titulo="Racha" valor={`${diasRacha}`} sufijo={diasRacha === 1 ? " día" : " días"} />
-        </dl>
+        {desbloqueados.length > 0 && (
+          <dl className="mb-7 grid grid-cols-3 gap-2.5 sm:gap-4">
+            <Dato titulo="Días completados" valor={`${hechos.length}`} sufijo={`/${desbloqueados.length}`} />
+            <Dato titulo="Promedio" valor={promedio === null ? "—" : `${promedio}`} sufijo={promedio === null ? "" : "/100"} />
+            <Dato titulo="Racha" valor={`${diasRacha}`} sufijo={diasRacha === 1 ? " día" : " días"} />
+          </dl>
+        )}
 
-        {hoy && <TarjetaHoy dia={hoy} />}
+        {hoy && <TarjetaHoy dia={hoy} hayManana={proximo !== null} />}
         {atrasados.length > 0 && (
           <p className="mb-5 text-[15px] text-gris-oscuro">
             {atrasados.length === 1 ? "Tienes 1 día anterior pendiente" : `Tienes ${atrasados.length} días anteriores pendientes`}
@@ -97,6 +101,14 @@ async function Contenido() {
             <p className="text-lg font-bold text-titulo">Aún no hay ejercicios</p>
             <p className="mt-1.5 text-[15px] text-gris-oscuro">Cuando tu coordinador los publique, aparecerán aquí.</p>
           </Tarjeta>
+        ) : desbloqueados.length === 0 ? (
+          <Tarjeta className="mx-auto flex max-w-[580px] flex-col items-center text-center">
+            <p className="text-lg font-bold text-titulo">Tu práctica empieza pronto</p>
+            <p className="mt-1.5 text-[15px] text-gris-oscuro">
+              El día 1 se desbloquea el {formatearFecha(dias[0].fecha)} a las 12:00 a. m. (hora de Colombia). Cada día
+              aparecerá uno nuevo.
+            </p>
+          </Tarjeta>
         ) : (
           <section aria-labelledby="titulo-dias">
             <h2 id="titulo-dias" className="mb-3.5 text-[17px] font-bold text-tinta">
@@ -106,12 +118,17 @@ async function Contenido() {
               </span>
             </h2>
             <ul className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3.5 lg:grid-cols-5">
-              {dias.map((d) => (
+              {desbloqueados.map((d) => (
                 <li key={d.id}>
                   <TarjetaDia dia={d} />
                 </li>
               ))}
             </ul>
+            {proximo && (
+              <p className="mt-4 text-sm text-gris-oscuro">
+                El día {proximo.numero} se desbloquea el {formatearFecha(proximo.fecha)} a las 12:00 a. m.
+              </p>
+            )}
           </section>
         )}
       </main>
@@ -131,7 +148,7 @@ function Dato({ titulo, valor, sufijo }: { titulo: string; valor: string; sufijo
   );
 }
 
-function TarjetaHoy({ dia }: { dia: DiaEstudiante }) {
+function TarjetaHoy({ dia, hayManana }: { dia: DiaEstudiante; hayManana: boolean }) {
   const accion =
     dia.estado === "disponible"
       ? { texto: "Empezar la práctica de hoy", href: `/dia/${dia.fecha}` }
@@ -142,7 +159,13 @@ function TarjetaHoy({ dia }: { dia: DiaEstudiante }) {
           : null;
   const texto =
     dia.estado === "completado"
-      ? `¡Listo por hoy! Sacaste ${dia.puntaje}/100. Mañana se desbloquea otro día.`
+      ? `¡Listo por hoy! Sacaste ${dia.puntaje}/100.${
+          dia.puede_repetir
+            ? " Si quieres, puedes repetirlo una vez más: cuenta tu mejor intento."
+            : hayManana
+              ? " Mañana se desbloquea otro día."
+              : " ¡Terminaste el último día!"
+        }`
       : dia.estado === "calificando"
         ? "Entregaste la práctica de hoy: estamos terminando de calificarla."
         : dia.estado === "sin_material"
@@ -181,11 +204,11 @@ function TarjetaDia({ dia }: { dia: DiaEstudiante }) {
       relleno="p-3.5 sm:p-4"
       className={`flex h-full flex-col gap-2 transition-shadow ${href ? "group-hover:shadow-[0_6px_20px_rgba(65,39,107,0.12)]" : ""} ${
         dia.es_hoy ? "!border-rosa" : ""
-      } ${dia.estado === "bloqueado" ? "opacity-60" : ""}`}
+      }`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="flex size-[34px] shrink-0 items-center justify-center rounded-[9px] bg-lavanda text-sm font-bold text-violeta">
-          {dia.estado === "bloqueado" ? "🔒" : dia.numero}
+          {dia.numero}
         </span>
         <Insignia tono={estado.tono}>{dia.es_hoy && dia.estado === "disponible" ? "Hoy" : estado.texto}</Insignia>
       </div>
@@ -197,6 +220,7 @@ function TarjetaDia({ dia }: { dia: DiaEstudiante }) {
         <p className="mt-auto text-[20px] leading-tight font-extrabold text-tinta">
           {dia.puntaje}
           <span className="text-sm font-bold text-rosa-hover">/100</span>
+          {dia.intentos > 1 && <span className="ml-1.5 text-xs font-semibold text-gris">mejor de {dia.intentos}</span>}
         </p>
       )}
     </Tarjeta>

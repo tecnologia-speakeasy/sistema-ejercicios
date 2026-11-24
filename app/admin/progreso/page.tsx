@@ -85,7 +85,7 @@ async function Contenido({ searchParams }: { searchParams: PageProps<"/admin/pro
     <>
       <TituloPagina
         titulo="Progreso"
-        subtitulo="El puntaje de cada estudiante en cada día. Toca un puntaje para ver lo que respondió."
+        subtitulo="El puntaje de cada estudiante en cada día (su mejor intento). Toca un puntaje para ver lo que respondió."
         acciones={
           <BotonEnlace href={`/admin/progreso/exportar?generacion=${generacion.id}`} variante="secundario" prefetch={false}>
             <Icono nombre="descargar" className="size-[18px]" />
@@ -96,7 +96,7 @@ async function Contenido({ searchParams }: { searchParams: PageProps<"/admin/pro
 
       {primero(sp.eliminada) === "1" && (
         <Aviso tono="exito" className="mb-5">
-          Eliminamos la entrega. El estudiante puede volver a hacer ese día si sigue disponible.
+          Eliminamos el intento. El estudiante lo recupera y puede volver a hacer ese día si sigue disponible.
         </Aviso>
       )}
 
@@ -118,7 +118,7 @@ async function Contenido({ searchParams }: { searchParams: PageProps<"/admin/pro
                       {r.nombre} <span className="font-normal text-gris-oscuro">· {r.email}</span>
                     </p>
                     <p className="text-[13px] text-gris-oscuro">
-                      {r.generacion} · Día {r.numero_dia} · entregado {formatearFechaHora(r.entregado)}
+                      {r.generacion} · Día {r.numero_dia} · intento {r.intento} · entregado {formatearFechaHora(r.entregado)}
                       {r.ia_error && <span className="block truncate text-error-texto">{r.ia_error}</span>}
                     </p>
                   </div>
@@ -211,9 +211,15 @@ async function Contenido({ searchParams }: { searchParams: PageProps<"/admin/pro
                         {celda && celda.estado !== "en_progreso" ? (
                           <Link
                             href={`/admin/entregas/${celda.entrega_id}`}
-                            className={`inline-flex h-7 min-w-[32px] items-center justify-center rounded-md px-1 text-xs font-bold hover:ring-2 hover:ring-rosa/40 ${claseCelda(celda)}`}
+                            title={celda.intentos > 1 ? `Mejor de ${celda.intentos} intentos` : undefined}
+                            className={`relative inline-flex h-7 min-w-[32px] items-center justify-center rounded-md px-1 text-xs font-bold hover:ring-2 hover:ring-rosa/40 ${claseCelda(celda)}`}
                           >
                             {texto}
+                            {celda.intentos > 1 && (
+                              <span aria-hidden className="absolute -top-1 -right-1 text-[9px] leading-none font-extrabold text-violeta">
+                                {celda.intentos}
+                              </span>
+                            )}
                           </Link>
                         ) : (
                           <span
@@ -243,6 +249,10 @@ async function Contenido({ searchParams }: { searchParams: PageProps<"/admin/pro
           <span className="rounded bg-[rgba(239,68,68,0.12)] px-1.5 font-bold text-error">&lt;60</span> a reforzar
         </span>
         <span>· sin entregar · … en curso · IA calificando la abierta</span>
+        <span>
+          Cuenta el mejor intento; el <span className="font-extrabold text-violeta">2</span> en la esquina indica que hizo el
+          día dos veces.
+        </span>
       </p>
       <Paginacion pagina={pagina} paginas={paginas} href={(p) => url(generacion.id, q, p)} />
     </>

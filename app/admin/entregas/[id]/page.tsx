@@ -3,8 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { staffParaPagina } from "@/lib/auth/guards";
-import { entregaParaStaff } from "@/lib/datos/revision";
+import { entregaParaStaff, type ResumenIntento } from "@/lib/datos/revision";
 import { formatearFecha, formatearFechaHora } from "@/lib/fechas";
+import { MAX_INTENTOS } from "@/lib/tipos";
 import { idUrlSchema } from "@/lib/validacion";
 import { RevisionEjercicio } from "@/app/components/ejercicios/RevisionEjercicio";
 import { Aviso } from "@/app/components/ui/Aviso";
@@ -25,8 +26,12 @@ const ESTADO = {
   error: { texto: "La IA falló", tono: "rojo" },
 } as const;
 
-// Lo que entregó un estudiante en un día: puntaje, feedback de la IA y cada
-// ejercicio con su comparación. Reintentar IA y eliminar la entrega.
+const mejorPuntaje = (intentos: ResumenIntento[]) =>
+  intentos.reduce<number | null>((m, a) => (a.puntaje_total !== null && (m === null || a.puntaje_total > m) ? a.puntaje_total : m), null);
+
+// Un intento de un estudiante en un día: puntaje, feedback de la IA y cada
+// ejercicio con su comparación (y los otros intentos del día). Reintentar IA y
+// eliminar el intento.
 export default function PaginaEntrega({ params }: PageProps<"/admin/entregas/[id]">) {
   return (
     <Suspense fallback={<Cargando />}>
@@ -55,22 +60,48 @@ async function Contenido({ params }: { params: Promise<{ id: string }> }) {
         titulo={d.nombre}
         subtitulo={
           <>
-            {d.email} · Día {d.dia.numero} ({formatearFecha(d.dia.fecha)})
+            {d.email} · Día {d.dia.numero} ({formatearFecha(d.dia.fecha)}) · intento {d.intento} de {MAX_INTENTOS}
             {d.entregado && ` · entregado ${formatearFechaHora(d.entregado)}`}
           </>
         }
         acciones={
           <>
             {sinFeedback && <BotonReintentar entregaId={d.id} />}
-            {staff.rol === "admin" && <EliminarEntrega entregaId={d.id} quien={d.nombre} dia={d.dia.numero} />}
+            {staff.rol === "admin" && (
+              <EliminarEntrega entregaId={d.id} quien={d.nombre} dia={d.dia.numero} intento={d.intento} />
+            )}
           </>
         }
       />
 
+      {d.intentos.length > 1 && (
+        <nav aria-label="Intentos de este día" className="mb-5 flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold text-gris-oscuro">Intentos de este día:</span>
+          {d.intentos.map((a) =>
+            a.id === d.id ? (
+              <span key={a.id} aria-current="page" className="rounded-full bg-rosa px-3 py-1 font-bold text-white">
+                Intento {a.numero} · {a.puntaje_total ?? "…"}
+              </span>
+            ) : (
+              <Link
+                key={a.id}
+                href={`/admin/entregas/${a.id}`}
+                className="rounded-full border border-borde bg-white px-3 py-1 font-semibold text-violeta hover:border-rosa"
+              >
+                Intento {a.numero} · {a.puntaje_total ?? "…"}
+              </Link>
+            ),
+          )}
+          <span className="text-gris-oscuro">
+            · cuenta el mejor: <strong className="text-tinta">{mejorPuntaje(d.intentos) ?? "—"}</strong>
+          </span>
+        </nav>
+      )}
+
       <div className="mb-6 grid gap-4 md:grid-cols-[220px_1fr]">
         <Tarjeta className="flex flex-col items-start gap-2">
           <Insignia tono={estado.tono}>{estado.texto}</Insignia>
-          <p className="text-[13px] text-gris">Puntaje del día</p>
+          <p className="text-[13px] text-gris">Puntaje de este intento</p>
           <p className="text-[34px] leading-none font-extrabold text-tinta">
             {d.puntaje_total ?? "…"}
             {d.puntaje_total !== null && <span className="text-base font-bold text-rosa-hover">/100</span>}

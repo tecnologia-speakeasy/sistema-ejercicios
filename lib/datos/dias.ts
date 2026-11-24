@@ -14,7 +14,9 @@ export type DiaResumen = {
   ejercicios: number;
   /** Cuántos de cada tipo (activos). */
   tipos: Partial<Record<TipoEjercicio, number>>;
+  /** Estudiantes que ya lo entregaron (al menos un intento). */
   entregas: number;
+  /** Promedio del mejor intento de cada estudiante. */
   promedio: number | null;
   /** Ya se desbloqueó (hoy en Bogotá o antes). */
   desbloqueado: boolean;
@@ -28,9 +30,12 @@ export async function listarDias(generacionId: number): Promise<DiaResumen[]> {
             coalesce((SELECT jsonb_object_agg(t.tipo, t.n)
                         FROM (SELECT e.tipo, count(*)::int AS n FROM ejercicios e
                                WHERE e.dia_id = d.id AND e.activo GROUP BY e.tipo) t), '{}'::jsonb) AS tipos,
-            (SELECT count(*)::int FROM entregas en WHERE en.dia_id = d.id AND en.estado <> 'en_progreso') AS entregas,
-            (SELECT round(avg(en.puntaje_total))::int FROM entregas en
-              WHERE en.dia_id = d.id AND en.puntaje_total IS NOT NULL) AS promedio,
+            (SELECT count(DISTINCT en.estudiante_id)::int FROM entregas en
+              WHERE en.dia_id = d.id AND en.estado <> 'en_progreso') AS entregas,
+            (SELECT round(avg(m.mejor))::int
+               FROM (SELECT max(en.puntaje_total) AS mejor FROM entregas en
+                      WHERE en.dia_id = d.id AND en.estado <> 'en_progreso'
+                      GROUP BY en.estudiante_id) m) AS promedio,
             d.fecha <= hoy_bogota() AS desbloqueado,
             d.fecha = hoy_bogota() AS es_hoy
        FROM dias d JOIN generaciones g ON g.id = d.generacion_id

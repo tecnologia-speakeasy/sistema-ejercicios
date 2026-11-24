@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
 import { estudianteParaPagina } from "@/lib/auth/guards";
-import { diaParaPracticar, type DiaEstudiante } from "@/lib/datos/entregas";
+import { diaParaPracticar, sePuedePracticar, type DiaEstudiante } from "@/lib/datos/entregas";
 import { formatearFecha } from "@/lib/fechas";
 import { FECHA_URL } from "@/lib/tipos";
 import Practica from "./Practica";
@@ -12,32 +12,43 @@ export const metadata: Metadata = { title: "Práctica del día" };
 
 // La práctica de un día de su generación. Solo llegan ejercicios de
 // v_ejercicios_publicos (sin transcripción, respuestas ni rúbrica) y solo si el
-// día ya se desbloqueó.
-export default function PaginaDia({ params }: PageProps<"/dia/[fecha]">) {
+// día ya se desbloqueó. ?repetir=1: el segundo intento (desde el resultado).
+export default function PaginaDia({ params, searchParams }: PageProps<"/dia/[fecha]">) {
   return (
     <Suspense fallback={<div className="fondo-intro min-h-screen flex-1" />}>
-      <Contenido params={params} />
+      <Contenido params={params} searchParams={searchParams} />
     </Suspense>
   );
 }
 
-async function Contenido({ params }: { params: Promise<{ fecha: string }> }) {
-  const { fecha } = await params;
+async function Contenido({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ fecha: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const [{ fecha }, sp] = await Promise.all([params, searchParams]);
   if (!FECHA_URL.test(fecha)) notFound();
-  const estudiante = await estudianteParaPagina(`/dia/${fecha}`);
-  const datos = await diaParaPracticar(fecha, estudiante);
+  const repetir = sp.repetir === "1";
+  const estudiante = await estudianteParaPagina(`/dia/${fecha}${repetir ? "?repetir=1" : ""}`);
+  const datos = await diaParaPracticar(fecha, estudiante, { repetir });
   if (!datos) notFound();
   const { dia } = datos;
 
-  if (dia.estado === "completado" || dia.estado === "calificando") redirect(`/dia/${fecha}/resultado`);
-  if (dia.estado !== "disponible" && dia.estado !== "en_curso") return <NoDisponible dia={dia} />;
+  if (!sePuedePracticar(dia, repetir)) {
+    if (dia.estado === "completado" || dia.estado === "calificando") redirect(`/dia/${fecha}/resultado`);
+    return <NoDisponible dia={dia} />;
+  }
 
-  // Next conserva (oculta) la página ya visitada: la key reinicia el estado
-  // cuando cambia la entrega en curso.
+  // El intento en curso o el siguiente. Next conserva (oculta) la página ya
+  // visitada: la key reinicia el estado con cada intento.
+  const intento = datos.enCurso?.intento ?? dia.intentos + 1;
   return (
     <Practica
-      key={`${dia.id}:${datos.enCurso?.id ?? 0}`}
+      key={`${dia.id}:${intento}:${datos.enCurso?.id ?? 0}`}
       dia={dia}
+      intento={intento}
       ejercicios={datos.ejercicios}
       enCurso={datos.enCurso}
       nombre={estudiante.nombre}

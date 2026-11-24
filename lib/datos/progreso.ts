@@ -1,16 +1,18 @@
 import "server-only";
-import { query } from "@/lib/db";
+import { query, transaction } from "@/lib/db";
 import { ErrorNegocio } from "@/lib/errores";
 import { sqlALocal } from "@/lib/fechas";
 import type { EstadoEntrega } from "@/lib/tipos";
 import { patronBusqueda } from "./estudiantes";
 
 // Progreso de los estudiantes (panel del staff): la matriz estudiantes × días,
-// las entregas que la IA no terminó y eliminar una entrega para que la repita.
+// las entregas que la IA no terminó y eliminar un intento para que lo repita.
+// Cada día cuenta el MEJOR intento del estudiante.
 
 export const POR_PAGINA_PROGRESO = 100;
 
-export type CeldaProgreso = { entrega_id: number; estado: EstadoEntrega; puntaje: number | null };
+/** Un estudiante en un día: su mejor intento entregado (o el que está en curso, si no ha entregado ninguno). */
+export type CeldaProgreso = { entrega_id: number; estado: EstadoEntrega; puntaje: number | null; intentos: number };
 
 export type FilaProgreso = {
   id: number;
@@ -40,17 +42,26 @@ export async function matrizProgreso(
   generacionId: number,
   { q = "", pagina = 1, limite = POR_PAGINA_PROGRESO }: { q?: string; pagina?: number; limite?: number } = {},
 ): Promise<{ filas: FilaProgreso[]; total: number }> {
+  // Por día: el intento que representa la celda (el mejor entregado; si no
+  // hay, el que está en curso) y cuántos intentos lleva (entregados).
   const { rows } = await query<FilaProgreso & { total: number }>(
-    `SELECT s.id, s.email::text AS email, s.activo,
+    `WITH mejores AS (
+       SELECT DISTINCT ON (en.estudiante_id, en.dia_id)
+              en.estudiante_id, en.dia_id, d.fecha, en.id, en.estado, en.puntaje_total,
+              count(*) FILTER (WHERE en.estado <> 'en_progreso')
+                OVER (PARTITION BY en.estudiante_id, en.dia_id) AS intentos
+         FROM entregas en JOIN dias d ON d.id = en.dia_id
+        WHERE d.generacion_id = $1
+        ORDER BY en.estudiante_id, en.dia_id, (en.estado = 'en_progreso'), en.puntaje_total DESC NULLS LAST, en.intento DESC)
+     SELECT s.id, s.email::text AS email, s.activo,
             (SELECT en.nombre FROM entregas en WHERE en.estudiante_id = s.id ORDER BY en.started_at DESC LIMIT 1) AS nombre,
-            coalesce((SELECT jsonb_object_agg(d.fecha::text, jsonb_build_object(
-                        'entrega_id', en.id, 'estado', en.estado, 'puntaje', en.puntaje_total))
-                        FROM entregas en JOIN dias d ON d.id = en.dia_id
-                       WHERE en.estudiante_id = s.id AND d.generacion_id = $1), '{}'::jsonb) AS celdas,
-            (SELECT count(*)::int FROM entregas en JOIN dias d ON d.id = en.dia_id
-              WHERE en.estudiante_id = s.id AND d.generacion_id = $1 AND en.estado <> 'en_progreso') AS completados,
-            (SELECT round(avg(en.puntaje_total))::int FROM entregas en JOIN dias d ON d.id = en.dia_id
-              WHERE en.estudiante_id = s.id AND d.generacion_id = $1 AND en.puntaje_total IS NOT NULL) AS promedio,
+            coalesce((SELECT jsonb_object_agg(m.fecha::text, jsonb_build_object(
+                        'entrega_id', m.id, 'estado', m.estado, 'puntaje', m.puntaje_total, 'intentos', m.intentos))
+                        FROM mejores m WHERE m.estudiante_id = s.id), '{}'::jsonb) AS celdas,
+            (SELECT count(*)::int FROM mejores m
+              WHERE m.estudiante_id = s.id AND m.estado <> 'en_progreso') AS completados,
+            (SELECT round(avg(m.puntaje_total))::int FROM mejores m
+              WHERE m.estudiante_id = s.id AND m.estado <> 'en_progreso' AND m.puntaje_total IS NOT NULL) AS promedio,
             count(*) OVER ()::int AS total
        FROM estudiantes s
       WHERE s.generacion_id = $1
@@ -82,6 +93,7 @@ export type EntregaPorRevisar = {
   generacion: string;
   numero_dia: number;
   fecha: string;
+  intento: number;
   estado: EstadoEntrega;
   ia_error: string | null;
   entregado: string | null;
@@ -90,7 +102,7 @@ export type EntregaPorRevisar = {
 export async function listarPorRevisar(): Promise<EntregaPorRevisar[]> {
   const { rows } = await query<EntregaPorRevisar>(
     `SELECT en.id, s.email::text AS email, en.nombre, g.nombre AS generacion,
-            (d.fecha - g.fecha_inicio + 1) AS numero_dia, d.fecha::text AS fecha, en.estado, en.ia_error,
+            (d.fecha - g.fecha_inicio + 1) AS numero_dia, d.fecha::text AS fecha, en.intento, en.estado, en.ia_error,
             ${sqlALocal("en.completed_at")} AS entregado
        FROM entregas en JOIN dias d ON d.id = en.dia_id JOIN generaciones g ON g.id = d.generacion_id
        JOIN estudiantes s ON s.id = en.estudiante_id
@@ -101,22 +113,36 @@ export async function listarPorRevisar(): Promise<EntregaPorRevisar[]> {
   return rows;
 }
 
-// Irreversible: se van sus respuestas, puntaje y feedback. El estudiante puede
-// volver a hacer ese día (si sigue disponible). No mientras la IA la califica.
+// Irreversible: se van sus respuestas, puntaje y feedback, y el estudiante
+// recupera ese intento (si el día sigue disponible). Si borra el 1.º y hay un
+// 2.º, este pasa a ser el 1.º. No mientras la IA lo califica.
 export async function eliminarEntrega(id: number): Promise<{ fecha: string; generacion_id: number }> {
-  const { rows } = await query<{ fecha: string; generacion_id: number; ocupada: boolean }>(
-    `WITH e AS (
-       SELECT en.id, d.fecha::text AS fecha, d.generacion_id,
+  return transaction(async (tx) => {
+    const { rows } = await tx.query<{
+      dia_id: number;
+      estudiante_id: number;
+      intento: number;
+      fecha: string;
+      generacion_id: number;
+      ocupada: boolean;
+    }>(
+      `SELECT en.dia_id, en.estudiante_id, en.intento, d.fecha::text AS fecha, d.generacion_id,
               (en.estado = 'calificando' AND en.procesando_hasta > now()) AS ocupada
-         FROM entregas en JOIN dias d ON d.id = en.dia_id WHERE en.id = $1),
-     borrada AS (DELETE FROM entregas WHERE id = (SELECT id FROM e WHERE NOT ocupada) RETURNING id)
-     SELECT e.fecha, e.generacion_id, e.ocupada FROM e`,
-    [id],
-  );
-  const r = rows[0];
-  if (!r) throw new ErrorNegocio("La entrega no existe.");
-  if (r.ocupada) throw new ErrorNegocio("La IA está calificando esta entrega en este momento. Inténtalo en un minuto.");
-  return { fecha: r.fecha, generacion_id: r.generacion_id };
+         FROM entregas en JOIN dias d ON d.id = en.dia_id WHERE en.id = $1
+          FOR UPDATE OF en`,
+      [id],
+    );
+    const r = rows[0];
+    if (!r) throw new ErrorNegocio("La entrega no existe.");
+    if (r.ocupada) throw new ErrorNegocio("La IA está calificando esta entrega en este momento. Inténtalo en un minuto.");
+    await tx.query(`DELETE FROM entregas WHERE id = $1`, [id]);
+    await tx.query(
+      `UPDATE entregas SET intento = intento - 1
+        WHERE dia_id = $1 AND estudiante_id = $2 AND intento > $3`,
+      [r.dia_id, r.estudiante_id, r.intento],
+    );
+    return { fecha: r.fecha, generacion_id: r.generacion_id };
+  });
 }
 
 // Filas para el CSV: una por estudiante con su puntaje de cada día.

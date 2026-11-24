@@ -37,7 +37,7 @@ const MENSAJES_TRIGGER: {
     mensaje: () => "Escribe el texto y marca entre [corchetes] las palabras que faltan.",
   },
   {
-    patron: /^Completar: el texto tiene (d+) espacios y hay (d+) listas/,
+    patron: /^Completar: el texto tiene (\d+) espacios y hay (\d+) listas/,
     campo: "texto",
     mensaje: (m) => `El texto tiene ${m[1]} espacio(s) y hay respuestas para ${m[2]}. Revisa los corchetes.`,
   },
@@ -97,8 +97,11 @@ const MENSAJES_CONSTRAINT: Record<string, ErrorTraducido> = {
   respuestas_ejercicio_id_fkey: {
     mensaje: "Este ejercicio ya tiene respuestas: desactívalo en vez de borrarlo.",
   },
-  entregas_dia_id_estudiante_id_key: {
-    mensaje: "Ya empezaste este día.",
+  entregas_dia_estudiante_intento_key: {
+    mensaje: "Ya empezaste este intento.",
+  },
+  entregas_un_intento_en_curso: {
+    mensaje: "Ya tienes un intento en curso de este día.",
   },
 };
 

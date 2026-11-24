@@ -16,12 +16,13 @@ import { Encabezado } from "@/app/components/ui/Encabezado";
 import type { DiaEstudiante, EjercicioPublico, EntregaEnCurso } from "@/lib/datos/entregas";
 import type { Respuestas } from "@/lib/ejercicios/respuestas";
 import { formatearFecha } from "@/lib/fechas";
+import { MAX_INTENTOS } from "@/lib/tipos";
 
 // La práctica de un día, con el UX del examen de sistema-evaluaciones:
 //   intro → un ejercicio por pantalla → "Estás entregando el día" →
 //   calificando (Spiky) → resultado (/dia/[fecha]/resultado).
-// La entrega la crea el servidor al tocar "Comenzar" y se retoma si recarga.
-// Las respuestas se guardan solas.
+// El intento lo crea el servidor al tocar "Comenzar" y se retoma si recarga.
+// Las respuestas se guardan solas. Hay MAX_INTENTOS por día: cuenta el mejor.
 
 const MIN_CALIFICANDO_MS = 2500;
 const CONSULTA_ESTADO_MS = 4000;
@@ -30,12 +31,15 @@ const SIN_CONEXION = "No pudimos conectar con el servidor. Revisa tu conexión e
 
 export default function Practica({
   dia,
+  intento: intentoInicial,
   ejercicios,
   enCurso,
   nombre,
   generacion,
 }: {
   dia: DiaEstudiante;
+  /** El intento en curso o el que va a empezar (1 o 2). */
+  intento: number;
   ejercicios: EjercicioPublico[];
   enCurso: EntregaEnCurso | null;
   nombre: string;
@@ -44,6 +48,7 @@ export default function Practica({
   const router = useRouter();
   const [fase, setFase] = useState<"intro" | "practica" | "confirmar" | "calificando">("intro");
   const [entregaId, setEntregaId] = useState<number | null>(null);
+  const [intento, setIntento] = useState(intentoInicial);
   const [respuestas, setRespuestas] = useState<Respuestas>({});
   const [indice, setIndice] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +149,7 @@ export default function Practica({
       const res = await fetch("/api/entregas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ diaId: dia.id }),
+        body: JSON.stringify({ diaId: dia.id, intento }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? SIN_CONEXION);
@@ -154,6 +159,7 @@ export default function Practica({
       }
       const en = data.entrega as EntregaEnCurso;
       setEntregaId(en.id);
+      setIntento(en.intento);
       setRespuestas(en.borrador);
       marcarGuardado({ respuestas: en.borrador });
       // Retoma en el primer ejercicio sin responder.
@@ -171,6 +177,7 @@ export default function Practica({
     return (
       <Intro
         dia={dia}
+        intento={intento}
         total={total}
         audios={ejercicios.filter((e) => e.tipo !== "abierta").length}
         abiertas={ejercicios.filter((e) => e.tipo === "abierta").length}
@@ -311,7 +318,10 @@ export default function Practica({
             {sinResponder > 0
               ? `Te ${sinResponder === 1 ? "falta 1 ejercicio" : `faltan ${sinResponder} ejercicios`} por responder. `
               : ""}
-            Solo se entrega una vez: después verás tu puntaje y lo que decía cada audio. ¿Deseas continuar?
+            {intento < MAX_INTENTOS
+              ? "Después verás tu puntaje y la retroalimentación, y podrás repetir el día una vez más: cuenta tu mejor intento."
+              : "Es tu último intento: después verás tu puntaje, lo que decía cada audio y la retroalimentación. Cuenta tu mejor intento."}{" "}
+            ¿Deseas continuar?
           </p>
           <button
             type="button"
@@ -346,6 +356,7 @@ function IndicadorGuardado({ estado }: { estado: EstadoGuardado }) {
 // Pantalla previa (styles.introPage de evaluaciones).
 function Intro({
   dia,
+  intento,
   total,
   audios,
   abiertas,
@@ -355,6 +366,7 @@ function Intro({
   onComenzar,
 }: {
   dia: DiaEstudiante;
+  intento: number;
   total: number;
   audios: number;
   abiertas: number;
@@ -375,11 +387,11 @@ function Intro({
       <div className="flex w-full max-w-[760px] animate-fade-up flex-col items-center text-center">
         <p className="mb-3 text-sm font-semibold tracking-wide text-white/60">
           Día {dia.numero} · {formatearFecha(dia.fecha)}
-          {dia.titulo ? ` · ${dia.titulo}` : ""}
+          {dia.titulo ? ` · ${dia.titulo}` : ""} · Intento {intento} de {MAX_INTENTOS}
         </p>
         <div className="mb-[46px] max-w-full text-left">
           <h1 className="mb-[18px] text-[clamp(26px,5.2vw,44px)] leading-[1.1] font-extrabold">
-            {enCurso ? "Continúa tu práctica" : "Práctica del día"}
+            {enCurso ? "Continúa tu práctica" : intento > 1 ? "Repite el día" : "Práctica del día"}
           </h1>
           <ul className="flex flex-col gap-2.5 text-[16px] leading-relaxed text-white/85 md:text-[17px]">
             <Punto>
@@ -391,7 +403,13 @@ function Intro({
                 ? "Tus respuestas están guardadas: sigues donde ibas."
                 : "Tus respuestas se guardan solas mientras avanzas: puedes salir y continuar después."}
             </Punto>
-            <Punto>Se entrega una sola vez. Al entregar verás tu puntaje, lo que decía cada audio y la retroalimentación.</Punto>
+            <Punto>
+              {intento < MAX_INTENTOS
+                ? `Tienes ${MAX_INTENTOS} intentos para este día y cuenta el mejor. Al entregar verás tu puntaje y la retroalimentación.`
+                : dia.puntaje !== null
+                  ? `Es tu último intento: cuenta el mejor (llevas ${dia.puntaje}/100). Al entregar verás también lo que decía cada audio.`
+                  : "Es tu último intento: cuenta el mejor. Al entregar verás también lo que decía cada audio."}
+            </Punto>
           </ul>
         </div>
         <button

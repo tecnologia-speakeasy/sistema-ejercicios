@@ -66,6 +66,9 @@ export function pesoPorDefecto(programa: Programa, tipo: TipoEjercicio): number 
   return tipo === "abierta" ? 30 : 70;
 }
 
+/** Intentos por día y estudiante; cuenta el mejor. Igual que en db/003 (CHECK y validar_entrega). */
+export const MAX_INTENTOS = 2;
+
 // "2026-12-09" → número del día dentro de la generación (1, 2, …).
 export function numeroDia(fecha: string, fechaInicio: string): number {
   const ms = Date.parse(`${fecha}T00:00:00Z`) - Date.parse(`${fechaInicio}T00:00:00Z`);
